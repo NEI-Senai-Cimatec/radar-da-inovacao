@@ -89,8 +89,8 @@ supabase_authenticate <- function(email, password, conn = NULL) {
     access_tok <- body_json$access_token
     
     # Opção 3: Obtém a permissão do usuário diretamente na tabela 'public.perfis' do Supabase
-    is_dev <- supabase_is_dev_or_diretoria(user, access_token = access_tok, conn = conn)
-    user$cargo <- if (isTRUE(is_dev)) "diretoria" else "leitor"
+    user$cargo <- supabase_resolve_role(user, access_token = access_tok, conn = conn)
+    is_dev <- role_has_full_access(user$cargo)
     
     return(list(
       success = TRUE,
@@ -541,8 +541,8 @@ supabase_restore_session <- function(session_data, conn = NULL) {
   
   if (isTRUE(user_res$success)) {
     user <- user_res$user
-    is_dev <- supabase_is_dev_or_diretoria(user, access_token = access_tok, conn = conn)
-    user$cargo <- if (isTRUE(is_dev)) "diretoria" else "leitor"
+    user$cargo <- supabase_resolve_role(user, access_token = access_tok, conn = conn)
+    is_dev <- role_has_full_access(user$cargo)
     return(list(
       success = TRUE,
       user = user,
@@ -568,8 +568,8 @@ supabase_restore_session <- function(session_data, conn = NULL) {
     }
     if (!is.null(user)) {
       user$cargo <- NULL
-      is_dev <- supabase_is_dev_or_diretoria(user, access_token = ref_res$access_token, conn = conn)
-      user$cargo <- if (isTRUE(is_dev)) "diretoria" else "leitor"
+      user$cargo <- supabase_resolve_role(user, access_token = ref_res$access_token, conn = conn)
+      is_dev <- role_has_full_access(user$cargo)
       return(list(
         success = TRUE,
         user = user,
@@ -690,84 +690,96 @@ supabase_get_all_profiles <- function(access_token = NULL) {
   tibble::tibble()
 }
 
-# Determina se o usuário autenticado possui credenciais de Desenvolvedor / Diretoria
-supabase_is_dev_or_diretoria <- function(user, access_token = NULL, conn = NULL) {
-  if (is.null(user)) return(FALSE)
-  
-  dev_roles <- c("diretoria", "dev", "developer", "desenvolvedor", "admin", "administrator", "administrador", "curador", "coordenacao", "coordenador")
-  
-  # 1. Se o objeto de usuário já possui o cargo resolvido em cache de sessão
-  if (!is.null(user$cargo) && nzchar(user$cargo)) {
-    cargo_clean <- tolower(trimws(as.character(user$cargo)))
-    if (cargo_clean %in% dev_roles) return(TRUE)
-    if (cargo_clean %in% c("leitor", "usuario", "user", "viewer", "pesquisador")) return(FALSE)
-  }
-  
+# ─── Cargos com acesso total ──────────────────────────────────────────────────
+# Diretoria, Superintendência e Desenvolvedores têm exatamente os mesmos acessos;
+# muda apenas o nome exibido. Os valores aceitos na coluna `cargo` da tabela
+# public.perfis são: diretoria, superintendencia, desenvolvedor, leitor
+# (acentos e maiúsculas são ignorados: "Superintendência" também funciona).
+normalize_role <- function(x) {
+  x <- tolower(trimws(as.character(x %||% "")))
+  if (!length(x) || is.na(x[[1]])) return("")
+  x <- iconv(x[[1]], from = "UTF-8", to = "ASCII//TRANSLIT", sub = "")
+  gsub("[^a-z/]", "", tolower(x %||% ""))
+}
+
+ROLE_FULL_ACCESS <- list(
+  diretoria = c("diretoria", "diretor", "diretora", "admin", "administrator", "administrador",
+                "curador", "coordenacao", "coordenador", "diretoria/dev"),
+  superintendencia = c("superintendencia", "superintendente"),
+  desenvolvedor = c("desenvolvedor", "desenvolvedores", "desenvolvedora", "dev", "developer")
+)
+ROLE_FULL_ACCESS_ALL <- unique(unlist(ROLE_FULL_ACCESS, use.names = FALSE))
+ROLE_READER <- c("leitor", "usuario", "user", "viewer", "pesquisador")
+
+# Converte qualquer variação para o cargo canônico: diretoria/superintendencia/desenvolvedor/leitor
+canonical_role <- function(x) {
+  r <- normalize_role(x)
+  if (!nzchar(r)) return("")
+  for (nm in names(ROLE_FULL_ACCESS)) if (r %in% ROLE_FULL_ACCESS[[nm]]) return(nm)
+  if (r %in% ROLE_READER) return("leitor")
+  ""
+}
+
+role_has_full_access <- function(x) canonical_role(x) %in% names(ROLE_FULL_ACCESS)
+
+# Nome exibido na interface
+role_display_name <- function(x) {
+  switch(canonical_role(x),
+    diretoria = "Diretoria",
+    superintendencia = "Superintendência",
+    desenvolvedor = "Desenvolvedores",
+    leitor = "Leitor / Pesquisador",
+    "Leitor / Pesquisador"
+  )
+}
+
+# Resolve o cargo canônico do usuário (mesma ordem de consulta de antes)
+supabase_resolve_role <- function(user, access_token = NULL, conn = NULL) {
+  if (is.null(user)) return("leitor")
+  cached <- canonical_role(user$cargo)
+  if (nzchar(cached)) return(cached)
+
   email <- tolower(trimws(as.character(user$email %||% "")))
-  
-  # 2. Verifica se o e-mail está na lista de dev_emails configurada no .Renviron (Super-rápido / 0ms)
   cfg <- supabase_get_config()
-  if (nzchar(email) && length(cfg$dev_emails) > 0 && email %in% cfg$dev_emails) {
-    return(TRUE)
+
+  # Cargo gravado na tabela public.perfis do Supabase tem prioridade (define o nome exibido)
+  sb_role <- tryCatch(canonical_role(supabase_get_user_role_from_db(user, access_token = access_token)),
+                      error = function(e) "")
+  if (nzchar(sb_role)) {
+    # E-mail na lista SUPABASE_DEV_EMAILS nunca perde o acesso total
+    if (identical(sb_role, "leitor") && nzchar(email) && email %in% (cfg$dev_emails %||% character())) return("diretoria")
+    return(sb_role)
   }
-  
-  # 3. Consulta à tabela 'public.perfis' do Supabase via REST API (Opção 3)
-  sb_role <- tryCatch({
-    supabase_get_user_role_from_db(user, access_token = access_token)
-  }, error = function(e) NULL)
-  
-  if (!is.null(sb_role) && nzchar(sb_role)) {
-    if (sb_role %in% dev_roles) {
-      return(TRUE)
-    }
-    if (sb_role %in% c("leitor", "usuario", "user", "viewer", "pesquisador")) {
-      return(FALSE)
-    }
-  }
-  
-  # 4. Fallback: Verifica na tabela local SQLite de permissões (user_permissions)
+  if (nzchar(email) && length(cfg$dev_emails) > 0 && email %in% cfg$dev_emails) return("diretoria")
+
   if (!is.null(conn)) {
     db_role <- tryCatch({
       res <- DBI::dbGetQuery(conn, "SELECT role FROM user_permissions WHERE lower(email) = lower(?)", params = list(email))
-      if (nrow(res) > 0) tolower(trimws(res$role[[1]])) else ""
+      if (nrow(res) > 0) canonical_role(res$role[[1]]) else ""
     }, error = function(e) "")
-    if (db_role %in% dev_roles) {
-      return(TRUE)
-    }
+    if (db_role %in% names(ROLE_FULL_ACCESS)) return(db_role)
   }
-  
-  # 5. Fallback: Verifica a role no app_metadata do Supabase
-  app_role <- tolower(trimws(as.character(user$app_metadata$role %||% "")))
-  if (nzchar(app_role) && app_role %in% dev_roles) {
-    return(TRUE)
+
+  for (meta in list(user$app_metadata$role, user$user_metadata$role)) {
+    r <- canonical_role(meta)
+    if (r %in% names(ROLE_FULL_ACCESS)) return(r)
   }
-  
-  # 6. Fallback: Verifica a role no user_metadata do Supabase
-  user_role <- tolower(trimws(as.character(user$user_metadata$role %||% "")))
-  if (nzchar(user_role) && user_role %in% dev_roles) {
-    return(TRUE)
-  }
-  
-  # 7. Fallback: Verifica flags booleanas em user_metadata / app_metadata
-  is_admin_flag <- isTRUE(user$user_metadata$is_admin) || isTRUE(user$user_metadata$is_dev) ||
-                   isTRUE(user$app_metadata$is_admin) || isTRUE(user$app_metadata$is_dev)
-  if (is_admin_flag) {
-    return(TRUE)
-  }
-  
-  FALSE
+  if (isTRUE(user$user_metadata$is_admin) || isTRUE(user$user_metadata$is_dev) ||
+      isTRUE(user$app_metadata$is_admin) || isTRUE(user$app_metadata$is_dev)) return("diretoria")
+  "leitor"
+}
+
+# Determina se o usuário possui acesso total (Diretoria, Superintendência ou Desenvolvedores)
+supabase_is_dev_or_diretoria <- function(user, access_token = NULL, conn = NULL) {
+  role_has_full_access(supabase_resolve_role(user, access_token = access_token, conn = conn))
 }
 
 # Retorna a descrição amigável do nível de acesso
 get_user_role_label <- function(user, is_dev = NULL, conn = NULL, access_token = NULL) {
   if (is.null(user)) return("Não autenticado")
-  if (is.null(is_dev)) is_dev <- supabase_is_dev_or_diretoria(user, access_token = access_token, conn = conn)
-  
-  if (isTRUE(is_dev)) {
-    "Diretoria"
-  } else {
-    "Leitor / Pesquisador"
-  }
+  r <- canonical_role(user$cargo)
+  if (!nzchar(r)) r <- supabase_resolve_role(user, access_token = access_token, conn = conn)
+  role_display_name(r)
 }
 
 # Garante que as tabelas de auditoria e de permissões existam no banco SQLite
@@ -839,14 +851,14 @@ log_user_access <- function(conn, user, action, details = "") {
   
   user_id <- as.character(user$id %||% "anônimo")
   email <- as.character(user$email %||% "anônimo")
-  is_dev <- if (!is.null(user$cargo)) {
-    isTRUE(tolower(trimws(as.character(user$cargo))) %in% c("diretoria", "dev", "developer", "desenvolvedor", "admin", "administrador", "curador"))
+  role <- if (nzchar(canonical_role(user$cargo))) {
+    canonical_role(user$cargo)
   } else if (identical(action, "RECUPERAR_SENHA") || identical(action, "CADASTRO") || identical(email, "recuperado")) {
-    FALSE
+    "leitor"
   } else {
-    supabase_is_dev_or_diretoria(user, conn = conn)
+    supabase_resolve_role(user, conn = conn)
   }
-  role <- if (isTRUE(is_dev)) "diretoria/dev" else "usuario"
+  if (identical(role, "leitor")) role <- "usuario"
   now_str <- format(Sys.time(), "%Y-%m-%d %H:%M:%S")
   
   tryCatch({
@@ -1518,7 +1530,7 @@ render_header_user_bar <- function(user, is_dev = FALSE, drive_status = "idle", 
       class = "badge",
       style = "background: #fef3c7; color: #92400e; border: 1px solid #fde68a; font-size: 0.7rem; font-weight: 700; padding: 2px 6px; border-radius: 4px;",
       htmltools::tags$i(class = "fa fa-shield-halved", style = "margin-right: 3px;"),
-      "Diretoria"
+      role_display_name(if (nzchar(canonical_role(user$cargo))) user$cargo else "diretoria")
     )
   } else {
     htmltools::tags$span(

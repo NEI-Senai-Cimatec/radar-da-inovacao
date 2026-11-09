@@ -21,7 +21,7 @@ create table if not exists public.perfis (
 
 -- Comentários descritivos para identificação no Supabase Studio
 comment on table public.perfis is 'Tabela de controle de acesso (RBAC) do Radar da Inovação';
-comment on column public.perfis.cargo is 'Permissão de acesso: "leitor" (padrão) ou "diretoria" (acesso irrestrito)';
+comment on column public.perfis.cargo is 'Permissão de acesso: "leitor" (padrão) ou "diretoria", "superintendencia", "desenvolvedor" (acesso irrestrito; muda só o nome exibido)';
 
 -- 2. Habilita Row Level Security (RLS)
 alter table public.perfis enable row level security;

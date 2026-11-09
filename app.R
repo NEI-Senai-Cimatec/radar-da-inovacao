@@ -670,7 +670,7 @@ ui <- bslib::page_sidebar(
                     style = "padding-left: 1.25rem; margin-bottom: 0;",
                     tags$li(tags$strong("Acesse o Supabase:"), " no menu lateral esquerdo, clique em ", tags$strong("Table Editor"), " (ícone de planilha)."),
                     tags$li(tags$strong("Abra a tabela 'perfis':"), " você verá todos os usuários cadastrados."),
-                    tags$li(tags$strong("Altere o cargo:"), " dê dois cliques na célula da coluna ", tags$strong("cargo"), " e digite ", tags$code("diretoria"), " ou ", tags$code("leitor"), "."),
+                    tags$li(tags$strong("Altere o cargo:"), " dê dois cliques na célula da coluna ", tags$strong("cargo"), " e digite ", tags$code("diretoria"), ", ", tags$code("superintendencia"), ", ", tags$code("desenvolvedor"), " ou ", tags$code("leitor"), ". Os três primeiros têm acesso total."),
                     tags$li(tags$strong("Pronto!"), " O usuário terá o novo nível aplicado imediatamente no próximo login.")
                   )
                 ),
@@ -680,7 +680,7 @@ ui <- bslib::page_sidebar(
                         tags$i(class = "fa fa-user-plus"), " Atribuição Local / Emergência"),
                 textInput("perm_user_email", "E-mail institucional", placeholder = "exemplo@fieb.org.br"),
                 selectInput("perm_user_role", "Nível de acesso atribuído", 
-                            choices = c("Diretoria" = "diretoria", "Leitor / Pesquisador" = "usuario"),
+                            choices = c("Diretoria" = "diretoria", "Superintendência" = "superintendencia", "Desenvolvedores" = "desenvolvedor", "Leitor / Pesquisador" = "usuario"),
                             selected = "diretoria"),
                 actionButton("btn_save_permission", "Salvar Permissão Local", class = "btn-sm btn-secondary w-100 mb-2", icon = icon("check"))
               ),
@@ -847,7 +847,7 @@ server <- function(input, output, session) {
   refresh_data()
 
   # Observador de controle de abas (RBAC):
-  # Abas 'Buscas salvas', 'Editais rastreados' e 'Logs & Auditoria' são exclusivas de Desenvolvedores / Diretoria
+  # Abas 'Buscas salvas', 'Editais rastreados' e 'Logs & Auditoria' são exclusivas de Diretoria, Superintendência e Desenvolvedores
   observe({
     if (!isTRUE(rv$is_dev_diretoria)) {
       bslib::nav_hide(id = "main_tabs", target = "buscas_salvas")
@@ -1759,7 +1759,7 @@ server <- function(input, output, session) {
   observeEvent(input$btn_collect_official, {
     req(rv$user)
     if (!isTRUE(rv$is_dev_diretoria)) {
-      showNotification("Acesso negado: apenas a Diretoria pode atualizar a base.", type = "error")
+      showNotification("Acesso negado: apenas Diretoria, Superintendência e Desenvolvedores podem atualizar a base.", type = "error")
       return()
     }
     if (isTRUE(rv$collecting)) {
@@ -1802,7 +1802,7 @@ server <- function(input, output, session) {
   observeEvent(input$confirm_collect_official, {
     req(rv$user)
     if (!isTRUE(rv$is_dev_diretoria)) {
-      showNotification("Acesso negado: apenas a Diretoria pode atualizar a base.", type = "error")
+      showNotification("Acesso negado: apenas Diretoria, Superintendência e Desenvolvedores podem atualizar a base.", type = "error")
       return()
     }
     if (is.null(conn)) {
@@ -4146,7 +4146,7 @@ server <- function(input, output, session) {
         dplyr::transmute(
           `Data/Hora` = timestamp,
           `E-mail` = email,
-          Perfil = dplyr::if_else(role == "diretoria/dev", "Diretoria", "Usuário"),
+          Perfil = vapply(role, role_display_name, character(1)),
           Ação = action,
           Detalhes = details
         )
@@ -4180,11 +4180,9 @@ server <- function(input, output, session) {
         dplyr::transmute(
           `E-mail` = email,
           `Cargo (Supabase)` = cargo,
-          `Acesso no Radar` = dplyr::if_else(
-            tolower(cargo) %in% c("diretoria", "dev", "developer", "desenvolvedor", "admin", "administrador", "curador"),
-            "Diretoria (Acesso Total)",
-            "Leitor (Editais apenas)"
-          ),
+          `Acesso no Radar` = vapply(cargo, function(cg) {
+            if (role_has_full_access(cg)) sprintf("%s (Acesso Total)", role_display_name(cg)) else "Leitor (Editais apenas)"
+          }, character(1)),
           `Origem` = "Supabase (Table Editor)",
           `Cadastrado em` = format(parse_datetime_safe(criado_em), "%d/%m/%Y %H:%M")
         )
@@ -4213,7 +4211,7 @@ server <- function(input, output, session) {
         ) |>
         dplyr::transmute(
           `E-mail` = email,
-          `Nível` = dplyr::if_else(role %in% c("diretoria", "dev", "admin"), "Diretoria", "Leitor"),
+          `Nível` = vapply(role, role_display_name, character(1)),
           `Atualizado em` = updated_at,
           `Ação`
         )
