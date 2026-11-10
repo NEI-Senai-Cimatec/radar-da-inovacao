@@ -148,7 +148,12 @@ SYNTHETIC_TITLES <- c(
 
 .INTERSTITIAL_TITLES <- c("sua conexao nao e particular", "your connection is not private", "privacy error",
                           "attention required! | cloudflare", "just a moment...", "access denied",
-                          "403 forbidden", "404 not found", "pagina nao encontrada", "erro 404")
+                          "403 forbidden", "404 not found", "pagina nao encontrada", "erro 404",
+                          "javascript is disabled", "sam.gov", "sam acquisition 360", "sign in", "login",
+                          "log in", "loading...", "please enable javascript")
+
+# Telas de erro/login/carregamento que alguns coletores salvam como se fossem editais
+.RE_JUNK_TITLE <- "javascript (is )?(disabled|required)|enable javascript|^sam(\\.gov| acquisition)|^(sign in|log ?in|loading\\.*|carregando\\.*)$"
 
 .RE_INNOVATION <- "pesquisa|desenvolvimento|inovac|inovador|\\bp&d|\\bpd&i|\\bpdi\\b|tecnolog|startup|projeto|solucao inovadora|ciencia|cientific|prototip|acelerac|research|development|innovat|science|scientific|technolog"
 .RE_CPSI <- "\\bcpsi\\b|contrato publico de solucao inovadora|contratacao de (teste de )?solucao inovadora|teste de solucao inovadora|desafio bndes|lei complementar n.? ?182"
@@ -163,7 +168,8 @@ classify_scope_type <- function(titulo = "", descricao = "", url = "", fonte_ofi
   td <- paste(t, d)
 
   if (t %in% SYNTHETIC_TITLES) return("sintetico")
-  if (t %in% .INTERSTITIAL_TITLES || grepl("sua conexao nao e particular|privacy error", t)) return("intersticial")
+  if (t %in% .INTERSTITIAL_TITLES || grepl("sua conexao nao e particular|privacy error", t) ||
+      grepl(.RE_JUNK_TITLE, t)) return("intersticial")
   if (nzchar(u) && grepl(.NAV_HOSTS, u) && !grepl("worldlabs", u)) return("navegacao")
   if (t %in% .NAV_TITLES) return("navegacao")
   if (grepl("mapa do site|^busca\\b|acessibilidade|internet banking|politica de privacidade", t)) return("navegacao")
@@ -238,11 +244,21 @@ apply_validation <- function(df, evidencia_chamada = FALSE, now = NULL) {
   df
 }
 
+is_junk_title <- function(titulo) {
+  t <- normalize_text(as.character(titulo %||% ""))
+  t[is.na(t)] <- ""
+  t %in% .INTERSTITIAL_TITLES | grepl(.RE_JUNK_TITLE, t)
+}
+
 # Universo público: itens validados + legados sem avaliação (compatibilidade pré-saneamento).
 # Itens a_verificar/rejeitado/quarentena ficam em opportunities_review.
+# Também ficam fora: telas de erro/login salvas como edital.
 filter_validated <- function(df) {
   if (is.null(df) || nrow(df) == 0L || !"validacao_status" %in% names(df)) return(df)
-  df[is.na(df$validacao_status) | df$validacao_status == "validado", , drop = FALSE]
+  keep <- is.na(df$validacao_status) | df$validacao_status == "validado"
+  keep <- keep & !is_junk_title(df$titulo)
+  keep[is.na(keep)] <- FALSE
+  df[keep, , drop = FALSE]
 }
 
 # ─── Campus e aderência temática (R05 / T18 / T19) ────────────────────────────
