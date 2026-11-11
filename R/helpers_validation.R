@@ -258,7 +258,20 @@ filter_validated <- function(df) {
   keep <- is.na(df$validacao_status) | df$validacao_status == "validado"
   keep <- keep & !is_junk_title(df$titulo)
   keep[is.na(keep)] <- FALSE
-  df[keep, , drop = FALSE]
+  dedup_same_call(df[keep, , drop = FALSE])
+}
+
+# Mesmo edital gravado duas vezes com links diferentes (ex.: PDF de retificação):
+# mesma fonte + mesmo título + mesmo prazo = um só registro (fica o coletado por último).
+dedup_same_call <- function(df) {
+  if (is.null(df) || nrow(df) < 2L || !all(c("entidade", "titulo") %in% names(df))) return(df)
+  tit <- gsub("[^a-z0-9]", "", normalize_text(as.character(df$titulo %||% "")))
+  prazo <- if ("data_limite" %in% names(df)) as.character(df$data_limite) else rep(NA_character_, nrow(df))
+  key <- paste(tolower(trimws(as.character(df$entidade))), tit, ifelse(is.na(prazo), "", prazo), sep = "|")
+  key[!nzchar(tit)] <- paste0("sem_titulo_", which(!nzchar(tit)))
+  ord <- if ("data_hora_coleta" %in% names(df)) order(as.character(df$data_hora_coleta), decreasing = TRUE, na.last = TRUE) else seq_len(nrow(df))
+  first <- !duplicated(key[ord])
+  df[sort(ord[first]), , drop = FALSE]
 }
 
 # ─── Campus e aderência temática (R05 / T18 / T19) ────────────────────────────
