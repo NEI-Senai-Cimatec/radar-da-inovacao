@@ -157,21 +157,6 @@ main_auto_collect <- function(test_mode = FALSE, source_filter = NULL) {
     }
   )
 
-  # Saneamento automático pós-coleta (remove quaisquer menus/links institucionais residuais)
-  message("[AutoCollect] Executando saneamento pós-coleta de editais...")
-  tryCatch({
-    py_candidates <- c(Sys.which("python"), Sys.which("python3"), Sys.which("py"))
-    py_candidates <- py_candidates[nzchar(py_candidates) & !grepl("WindowsApps|WINDOW~1", py_candidates, ignore.case = TRUE)]
-    py_bin <- if (length(py_candidates) > 0) py_candidates[[1]] else ""
-    clean_script <- file.path(app_dir, "tools", "clean_database.py")
-    if (nzchar(py_bin) && file.exists(clean_script)) {
-      system2(py_bin, args = clean_script, stdout = TRUE, stderr = TRUE)
-      message("[AutoCollect] Saneamento pós-coleta executado com sucesso.")
-    }
-  }, error = function(e) {
-    message(sprintf("[AutoCollect] Aviso no saneamento: %s", e$message))
-  })
-
   # Registrar log de conclusão
   conn <- ensure_alive_connection(conn)
   log_collection(
@@ -221,6 +206,25 @@ main_auto_collect <- function(test_mode = FALSE, source_filter = NULL) {
       message(sprintf("[AutoCollect] Aviso: falha ao espelhar para SQLite: %s", conditionMessage(e)))
     })
   }
+
+  # Saneamento pós-coleta (remove menus/links institucionais residuais).
+  # Roda DEPOIS do espelhamento: o script lê funding_intelligence.sqlite para decidir o que
+  # apagar. Antes ele rodava com o SQLite do dia anterior, então o que a coleta de hoje
+  # inseria só era apagado na rodada seguinte, e a contagem subia e descia dia sim, dia não.
+  message("[AutoCollect] Executando saneamento pós-coleta de editais...")
+  tryCatch({
+    py_candidates <- c(Sys.which("python"), Sys.which("python3"), Sys.which("py"))
+    py_candidates <- py_candidates[nzchar(py_candidates) & !grepl("WindowsApps|WINDOW~1", py_candidates, ignore.case = TRUE)]
+    py_bin <- if (length(py_candidates) > 0) py_candidates[[1]] else ""
+    clean_script <- file.path(app_dir, "tools", "clean_database.py")
+    if (nzchar(py_bin) && file.exists(clean_script)) {
+      out <- system2(py_bin, args = clean_script, stdout = TRUE, stderr = TRUE)
+      message(paste(out, collapse = "\n"))
+      message("[AutoCollect] Saneamento pós-coleta executado com sucesso.")
+    }
+  }, error = function(e) {
+    message(sprintf("[AutoCollect] Aviso no saneamento: %s", e$message))
+  })
 
   message("----------------------------------------------------------------------")
   message(sprintf("[AutoCollect] SUCESSO: %d fontes processadas.", res$sources_processed %||% 0L))
