@@ -114,6 +114,11 @@ generate_docx_report <- function(report_data, output_file, template_path = "temp
   # 2. Normaliza os placeholders que o MS Word quebra entre múltiplos tags/runs
   clean_xml <- docx_merge_split_placeholders(clean_xml)
 
+  # A última seção do modelo usava outro cabeçalho (fundo branco com logos de parceiros do
+  # QUIIN). Para o Word sair igual ao PDF, todas as páginas usam o cabeçalho azul padrão.
+  clean_xml <- gsub('<w:headerReference w:type="default" r:id="rId16"/>',
+                    '<w:headerReference w:type="default" r:id="rId11"/>', clean_xml, fixed = TRUE)
+
   extra_rels <- character(0)
 
   # 3. Substitui os placeholders dos 3 editais garantindo rótulos em negrito e valores sem negrito

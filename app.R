@@ -312,11 +312,12 @@ ui <- bslib::page_sidebar(
         value = "", 
         placeholder = "Ex.: (aeroespacial OR satélite) OR (agro OR semiárido OR hidrogênio verde)"
       ),
-      selectInput("region_filter", "Região das fontes", choices = c("Ambas", "Brasileiras", "Europeias", "Internacionais"), selected = "Ambas")
+      selectInput("region_filter", "Região das fontes", choices = REGION_CHOICES, selected = "Todas")
     ),
     tags$div(
       class = "search-actions",
       actionButton("btn_search", "Buscar", class = "btn-primary", icon = icon("search")),
+      actionButton("btn_clear_search", "Limpar busca", class = "btn-outline-secondary", icon = icon("eraser")),
       actionButton("btn_advanced", "Busca avançada", class = "btn-outline-primary", icon = icon("sliders-h")),
       actionButton("btn_save_search", "Salvar busca", class = "btn-outline-secondary", icon = icon("bookmark")),
       uiOutput("btn_collect_container")
@@ -599,27 +600,6 @@ ui <- bslib::page_sidebar(
       DTOutput("funders_table")
     ),
     bslib::nav_panel(
-      title = tags$span(tags$i(class = "fa fa-bookmark"), " Editais Rastreados"),
-      value = "editais_rastreados",
-      bslib::layout_columns(
-        col_widths = c(8, 4),
-        DTOutput("tracked_table"),
-        tags$div(
-          bslib::card(
-            h5("Atualizar rastreamento"),
-            selectInput("tracked_status_input", "Status", choices = c("avaliar", "prioritário", "submetido", "descartado"), selected = "avaliar"),
-            textAreaInput("tracked_notes_input", "Observações", width = "100%", rows = 6),
-            actionButton("btn_update_tracked", "Salvar atualização", class = "btn-primary w-100 mb-2"),
-            actionButton("btn_remove_tracked", "Remover da lista", class = "btn-outline-danger w-100")
-          ),
-          bslib::card(
-            h5("Potenciais Parceiros (CIMATEC)"),
-            uiOutput("tracked_partners_ui")
-          )
-        )
-      )
-    ),
-    bslib::nav_panel(
       title = tags$span(tags$i(class = "fa fa-search"), " Buscas Salvas"),
       value = "buscas_salvas",
       tags$div(
@@ -847,15 +827,13 @@ server <- function(input, output, session) {
   refresh_data()
 
   # Observador de controle de abas (RBAC):
-  # Abas 'Buscas salvas', 'Editais rastreados' e 'Logs & Auditoria' são exclusivas de Diretoria, Superintendência e Desenvolvedores
+  # Abas 'Buscas salvas' e 'Logs & Auditoria' são exclusivas de Diretoria, Superintendência e Desenvolvedores
   observe({
     if (!isTRUE(rv$is_dev_diretoria)) {
       bslib::nav_hide(id = "main_tabs", target = "buscas_salvas")
-      bslib::nav_hide(id = "main_tabs", target = "editais_rastreados")
       bslib::nav_hide(id = "main_tabs", target = "logs_auditoria")
     } else {
       bslib::nav_show(id = "main_tabs", target = "buscas_salvas")
-      bslib::nav_show(id = "main_tabs", target = "editais_rastreados")
       bslib::nav_show(id = "main_tabs", target = "logs_auditoria")
     }
   })
@@ -1680,6 +1658,16 @@ server <- function(input, output, session) {
     log_user_access(conn, rv$user, action = "BUSCA", details = sprintf("Consulta: '%s'", input$search_query %||% ""))
   })
 
+  # Limpar busca: apaga o texto digitado, os filtros da busca avançada e a região,
+  # e volta a lista completa (não grava no histórico de buscas).
+  observeEvent(input$btn_clear_search, {
+    req(rv$user)
+    updateTextInput(session, "search_query", value = "")
+    updateSelectInput(session, "region_filter", selected = "Todas")
+    rv$advanced_filters <- list()
+    execute_search("", save_history = FALSE)
+  })
+
   observeEvent(input$btn_advanced, {
     opps <- rv$opportunities
     showModal(modalDialog(
@@ -1766,18 +1754,8 @@ server <- function(input, output, session) {
       show_progress_modal()
       return()
     }
-    region <- as.character(input$region_filter %||% "Ambas")
     available_sources <- rv$sources
-    
-    if (identical(region, "Brasileiras")) {
-      available_sources <- available_sources |> dplyr::filter(pais == "Brasil")
-    } else if (identical(region, "Europeias")) {
-      available_sources <- available_sources |> dplyr::filter(pais %in% c("União Europeia", "Alemanha", "Europa"))
-    } else if (identical(region, "Internacionais")) {
-      available_sources <- available_sources |> dplyr::filter(pais != "Brasil")
-    } else {
-      available_sources <- available_sources
-    }
+    available_sources <- available_sources[region_matches(available_sources$pais, input$region_filter), , drop = FALSE]
     
     choices <- stats::setNames(available_sources$id_fonte, paste0(available_sources$sigla, " — ", available_sources$nome_fonte))
     default_sel <- available_sources$id_fonte
@@ -1983,18 +1961,8 @@ server <- function(input, output, session) {
     # Status derivado em renderização (BUG-01): nunca ler status_oportunidade congelado
     df$derived_status <- derive_status_df(df)
 
-    # Filtro regional — Ambas = literalmente todas (sem filtro), Internacionais = todas não-brasileiras
-    region <- as.character(input$region_filter %||% "Ambas")
-    if (identical(region, "Brasileiras")) {
-      df <- df |> dplyr::filter(pais_origem == "Brasil")
-    } else if (identical(region, "Europeias")) {
-      df <- df |> dplyr::filter(pais_origem %in% c("União Europeia", "Alemanha", "Europa"))
-    } else if (identical(region, "Internacionais")) {
-      df <- df |> dplyr::filter(pais_origem != "Brasil")
-    } else {
-      # Ambas — literalmente todas as origens, inclusivo a futuras (EUA, Canadá, etc.)
-      df <- df
-    }
+    # Filtro regional: Brasileiras / Europeias / Demais regiões / Todas
+    df <- df[region_matches(df$pais_origem, input$region_filter), , drop = FALSE]
 
     # Filtros Rápidos do Sidebar
     if (isTRUE(include_campus) && length(input$filter_campus) > 0 && !"Todos" %in% input$filter_campus) {
@@ -2423,14 +2391,13 @@ server <- function(input, output, session) {
 
   output$results_table <- renderDT({
     req(rv$user)
-    can_track_flag <- isTRUE(rv$is_dev_diretoria)
     df <- filtered_results()
     if (nrow(df) == 0) {
       shown <- tibble::tibble(
         ID = character(),
         Título = character(),
         Financiador = factor(),
-        `Afinidade ao perfil <i class='fa fa-info-circle text-info' title='0 a 100: quanto o edital combina com suas buscas, perfil e editais rastreados. Não é a aderência ao campus (veja as abas dos campi).'></i>` = character(),
+        `Afinidade ao perfil <i class='fa fa-info-circle text-info' title='0 a 100: quanto o edital combina com suas buscas, e perfil. Não é a aderência ao campus (veja as abas dos campi).'></i>` = character(),
         Prazo = character(),
         Status = factor(),
         Ações = character()
@@ -2446,30 +2413,41 @@ server <- function(input, output, session) {
           ),
           Financiador = as.factor(entidade),
           Título = stringr::str_trunc(titulo, 90),
-          Ações = vapply(id_registro, make_actions_html, character(1), can_track = can_track_flag)
+          Ações = vapply(id_registro, make_actions_html, character(1))
         ) |>
         dplyr::transmute(
           ID = id_registro,
           Título,
           Financiador,
-          `Afinidade ao perfil <i class='fa fa-info-circle text-info' title='0 a 100: quanto o edital combina com suas buscas, perfil e editais rastreados. Não é a aderência ao campus (veja as abas dos campi).'></i>` = Aderência,
+          `Afinidade ao perfil <i class='fa fa-info-circle text-info' title='0 a 100: quanto o edital combina com suas buscas, e perfil. Não é a aderência ao campus (veja as abas dos campi).'></i>` = Aderência,
           Prazo,
           Status,
           Ações
         )
     }
+    # Larguras fixas: a tabela mantém a mesma aparência com qualquer filtro
+    # (antes o navegador recalculava as colunas conforme o conteúdo de cada resultado).
     DT::datatable(
       shown, 
       escape = FALSE, 
       rownames = FALSE,
       filter = "none", 
+      class = "display compact results-table-fixed",
+      width = "100%",
       options = list(
         pageLength = 10, 
         scrollX = TRUE, 
+        autoWidth = FALSE,
         searching = FALSE,
         language = list(emptyTable = "Nenhum resultado encontrado."),
         columnDefs = list(
           list(targets = 0, visible = FALSE),
+          list(targets = 1, width = "40%"),
+          list(targets = 2, width = "15%"),
+          list(targets = 3, width = "12%"),
+          list(targets = 4, width = "9%", className = "dt-nowrap"),
+          list(targets = 5, width = "12%", className = "dt-actions"),
+          list(targets = 6, width = "12%", className = "dt-actions"),
           dt_prazo_column_def(4),
           dt_status_column_def(5),
           list(targets = c(0, 6), searchable = FALSE, orderable = FALSE)
@@ -2505,13 +2483,6 @@ server <- function(input, output, session) {
     }
   )
 
-  observeEvent(input$row_action, {
-    req(isTRUE(rv$is_dev_diretoria))
-    rv$selected_tracked_id <- input$row_action$id
-    if (!is.null(conn)) track_opportunity(conn, input$row_action$id, status_usuario = "avaliar", observacoes = "")
-    refresh_data()
-    showNotification("Edital adicionado à lista de rastreamento.", type = "message")
-  })
 
   # Modal de detalhes — função única usada por clique, deep-link e retry (MH-04)
   show_opportunity_modal <- function(id) {
@@ -3041,7 +3012,7 @@ server <- function(input, output, session) {
         Título = stringr::str_trunc(titulo, 70),
         Aderência = aderencia_naval_nivel,
         `Objeto de Financiamento` = objeto_financiamento_curto(descricao_resumida),
-        Ações = vapply(id_registro, make_actions_html, character(1), can_track = isTRUE(rv$is_dev_diretoria))
+        Ações = vapply(id_registro, make_actions_html, character(1))
       ) |>
       dplyr::transmute(
         ID = id_registro,
@@ -3159,7 +3130,7 @@ server <- function(input, output, session) {
         Título = stringr::str_trunc(titulo, 70),
         Aderência = aderencia_sertao_nivel,
         `Objeto de Financiamento` = objeto_financiamento_curto(descricao_resumida),
-        Ações = vapply(id_registro, make_actions_html, character(1), can_track = isTRUE(rv$is_dev_diretoria))
+        Ações = vapply(id_registro, make_actions_html, character(1))
       ) |>
       dplyr::transmute(
         ID = id_registro,
@@ -3277,7 +3248,7 @@ server <- function(input, output, session) {
         Título = stringr::str_trunc(titulo, 70),
         Aderência = aderencia_aero_nivel,
         `Objeto de Financiamento` = objeto_financiamento_curto(descricao_resumida),
-        Ações = vapply(id_registro, make_actions_html, character(1), can_track = isTRUE(rv$is_dev_diretoria))
+        Ações = vapply(id_registro, make_actions_html, character(1))
       ) |>
       dplyr::transmute(
         ID = id_registro,
@@ -3395,7 +3366,7 @@ server <- function(input, output, session) {
         Título = stringr::str_trunc(titulo, 70),
         Aderência = aderencia_digital_nivel,
         `Objeto de Financiamento` = objeto_financiamento_curto(descricao_resumida),
-        Ações = vapply(id_registro, make_actions_html, character(1), can_track = isTRUE(rv$is_dev_diretoria))
+        Ações = vapply(id_registro, make_actions_html, character(1))
       ) |>
       dplyr::transmute(
         ID = id_registro,
@@ -3513,7 +3484,7 @@ server <- function(input, output, session) {
         Título = stringr::str_trunc(titulo, 70),
         Aderência = aderencia_park_nivel,
         `Objeto de Financiamento` = objeto_financiamento_curto(descricao_resumida),
-        Ações = vapply(id_registro, make_actions_html, character(1), can_track = isTRUE(rv$is_dev_diretoria))
+        Ações = vapply(id_registro, make_actions_html, character(1))
       ) |>
       dplyr::transmute(
         ID = id_registro,
@@ -3631,7 +3602,7 @@ server <- function(input, output, session) {
         Título = stringr::str_trunc(titulo, 70),
         Aderência = aderencia_startups_nivel,
         `Objeto de Financiamento` = objeto_financiamento_curto(descricao_resumida),
-        Ações = vapply(id_registro, make_actions_html, character(1), can_track = isTRUE(rv$is_dev_diretoria))
+        Ações = vapply(id_registro, make_actions_html, character(1))
       ) |>
       dplyr::transmute(
         ID = id_registro,
@@ -3932,128 +3903,6 @@ server <- function(input, output, session) {
     }
   })
 
-  output$tracked_table <- renderDT({
-    req(rv$user)
-    req(isTRUE(rv$is_dev_diretoria))
-    if (nrow(rv$tracked) == 0) {
-      df <- tibble::tibble(id = character(), Título = character(), Financiador = character(), Prazo = character(), Status = character(), Observações = character())
-    } else {
-      df <- rv$tracked |>
-        dplyr::left_join(rv$opportunities, by = c("id_oportunidade" = "id_registro")) |>
-        dplyr::transmute(id = id_oportunidade, Título = titulo, Financiador = entidade, Prazo = format_date_br(data_limite), Status = tools::toTitleCase(status_usuario), Observações = observacoes.x)
-    }
-    DT::datatable(
-      df,
-      options = list(
-        pageLength = 8,
-        scrollX = TRUE,
-        language = list(emptyTable = "Nenhum edital rastreado."),
-        columnDefs = list(
-          dt_prazo_column_def(4),
-          list(
-            targets = 5,
-            render = DT::JS("
-              function(data, type, row, meta) {
-                if (type === 'display') {
-                  var s = (data || '').toLowerCase();
-                  var cls = 'badge-soft-neutral';
-                  if (s === 'avaliar') cls = 'badge-soft-neutral';
-                  else if (s === 'prioritário' || s === 'prioritario') cls = 'badge-soft-warning';
-                  else if (s === 'submetido') cls = 'badge-soft-info';
-                  else if (s === 'descartado') cls = 'badge-soft-closed';
-                  return \"<span class='status-badge \" + cls + \"'>\" + data + \"</span>\";
-                }
-                return data;
-              }
-            ")
-          )
-        )
-      ),
-      selection = "single"
-    )
-  }, server = FALSE)
-
-  observeEvent(input$tracked_table_rows_selected, {
-    idx <- input$tracked_table_rows_selected
-    if (length(idx) == 1 && nrow(rv$tracked) >= idx) {
-      rv$selected_tracked_id <- rv$tracked$id_oportunidade[[idx]]
-      updateSelectInput(session, "tracked_status_input", selected = rv$tracked$status_usuario[[idx]])
-      updateTextAreaInput(session, "tracked_notes_input", value = rv$tracked$observacoes[[idx]] %||% "")
-    } else {
-      rv$selected_tracked_id <- NULL
-    }
-  })
-
-  output$tracked_partners_ui <- renderUI({
-    opp_id <- rv$selected_tracked_id
-    if (is.null(opp_id) || !nzchar(opp_id)) {
-      return(tags$p(style = "color: #64748b; font-style: italic;", 
-                    "Selecione um edital na tabela ao lado para visualizar os parceiros internos recomendados."))
-    }
-    
-    partners <- recommend_partners_for_opportunity(conn, opp_id, top_n = 5)
-    
-    if (nrow(partners) == 0) {
-      return(tags$p(style = "color: #64748b; font-style: italic;", 
-                    "Nenhum pesquisador compatível encontrado para este edital."))
-    }
-    
-    # Renderizar lista de parceiros
-    partner_items <- lapply(seq_len(nrow(partners)), function(i) {
-      p <- partners[i, ]
-      
-      # Barra de progresso visual para afinidade
-      affinity_bar <- tags$div(
-        class = "score-wrap",
-        style = "margin-top: 5px; margin-bottom: 8px;",
-        tags$div(
-          class = "score-bar",
-          tags$div(
-            class = "score-bar-fill",
-            style = sprintf("width: %d%%;", p$score_afinidade)
-          )
-        ),
-        tags$div(
-          class = "score-label",
-          sprintf("Afinidade: %d%%", p$score_afinidade)
-        )
-      )
-      
-      tags$div(
-        style = "border-bottom: 1px solid #f1f5f9; padding-bottom: 10px; margin-bottom: 10px;",
-        tags$h6(style = "margin-bottom: 2px; color: #004691; font-weight: 600;", p$nome),
-        tags$p(style = "font-size: 0.8rem; color: #64748b; margin-bottom: 4px;", 
-               tags$strong("Email: "), tags$a(href = paste0("mailto:", p$email), p$email), " | ", tags$strong("Inst: "), p$instituicao),
-        affinity_bar,
-        if (nzchar(p$termos_correspondentes)) {
-          tags$p(style = "font-size: 0.75rem; margin-bottom: 4px; color: #0f172a;",
-                 tags$strong("Termos correspondentes: "), 
-                 tags$span(style = "background-color: #eff6ff; color: #1e40af; padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 0.7rem;", p$termos_correspondentes))
-        },
-        if (nzchar(p$projetos_passados)) {
-          tags$p(style = "font-size: 0.75rem; color: #475569; margin-bottom: 0;",
-                 tags$strong("Projetos passados: "), p$projetos_passados)
-        }
-      )
-    })
-    
-    tags$div(partner_items)
-  })
-
-  observeEvent(input$btn_update_tracked, {
-    req(conn, rv$selected_tracked_id)
-    update_tracked_opportunity(conn, rv$selected_tracked_id, input$tracked_status_input, input$tracked_notes_input %||% "")
-    refresh_data()
-    showNotification("Rastreamento atualizado.", type = "message")
-  })
-
-  observeEvent(input$btn_remove_tracked, {
-    req(conn, rv$selected_tracked_id)
-    delete_tracked_opportunity(conn, rv$selected_tracked_id)
-    rv$selected_tracked_id <- NULL
-    refresh_data()
-    showNotification("Item removido da lista de rastreamento.", type = "message")
-  })
 
   output$recommended_table <- renderDT({
     df <- recommend_opportunities(conn, filtered_results(), rv$current_query, top_n = 15, signature = interest_sig())
@@ -4257,7 +4106,6 @@ server <- function(input, output, session) {
     outputOptions(output, "user_access_logs_table", suspendWhenHidden = TRUE)
     outputOptions(output, "logs_table", suspendWhenHidden = TRUE)
     outputOptions(output, "saved_searches_table", suspendWhenHidden = TRUE)
-    outputOptions(output, "tracked_table", suspendWhenHidden = TRUE)
     outputOptions(output, "funders_plot", suspendWhenHidden = TRUE)
     outputOptions(output, "funders_table", suspendWhenHidden = TRUE)
     outputOptions(output, "themes_plot", suspendWhenHidden = TRUE)

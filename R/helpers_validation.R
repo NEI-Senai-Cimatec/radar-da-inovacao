@@ -257,21 +257,87 @@ filter_validated <- function(df) {
   if (is.null(df) || nrow(df) == 0L || !"validacao_status" %in% names(df)) return(df)
   keep <- is.na(df$validacao_status) | df$validacao_status == "validado"
   keep <- keep & !is_junk_title(df$titulo)
+  keep <- keep & !is_not_a_call(df)
   keep[is.na(keep)] <- FALSE
   dedup_same_call(df[keep, , drop = FALSE])
 }
 
-# Mesmo edital gravado duas vezes com links diferentes (ex.: PDF de retificação):
-# mesma fonte + mesmo título + mesmo prazo = um só registro (fica o coletado por último).
+# ─── Portão de qualidade: o registro é mesmo um edital/chamada? ────────────────
+# Fontes internacionais (NSF, NASA, DOE, DARPA, ESA...) não passam pelo validador
+# brasileiro e trazem também páginas de navegação, notícias e avisos. Estas regras
+# valem para TODAS as fontes e para os registros já gravados (filtro na leitura).
+
+# Títulos de páginas de navegação/ajuda/institucionais (título inteiro ou começo)
+.RE_NAV_TITLE <- paste0(
+  "^(how to apply( to .*)?|latest news|news|funding|getting started|about( .*)?|manage your award|",
+  "information for .*|office of .*|esa business ambassadors|growth projects|",
+  "inicio \\| .*|home|pesquisa de premios|como tomamos decisoes.*|solicite uma alteracao.*|",
+  "enviando sua proposta|financiamento para .*|international collaboration opportunities|",
+  "comunicado|[0-9]{8} comunicado|fomento( - .*)?|valores vigentes|categoria [a-z]|",
+  "stage [a-z] selection|technology drives exploration)$")
+
+# Documentos que acompanham editais mas não são editais
+.RE_DOC_TITLE <- paste0(
+  "declaracao de reconhecimento|relacao das inscricoes|programas de pos-graduacao que aderiram|",
+  "notice of (court orders|equal employment)|resultado (final|preliminar)|",
+  "selecionam pesquisa|^special guidelines|^diretrizes especiais para envio|",
+  "travel services|vehicle rental|aluguel de veiculos")
+
+# Notícias e comunicados de imprensa
+.RE_NEWS_TITLE <- paste0(
+  "^(energy department|doe|nasa|darpa|nsf|embrapii|finep|cnpq) (announces|launches|awards|anuncia|lanca|seleciona)|",
+  "^nasa (astronaut|space grant)|crew reflects|expands quest|answer questions from")
+.RE_NEWS_URL <- "darpa\\.mil/research/programs/|/news(-release)?/|/articles?/|/learning-resources/|/latest-news|/centers-and-facilities/|/noticias?/"
+
+# Link quebrado: o coletor do portal europeu gravou dezenas de registros apontando para
+# ".../topicDetails/.json" (sem o código do tópico) — títulos só com código de chamadas
+# antigas (2021–2024) ou textos genéricos; não levam a lugar nenhum.
+.RE_BROKEN_URL <- "topicdetails/\\.json$"
+
+is_not_a_call <- function(df) {
+  n <- nrow(df)
+  if (!n) return(logical())
+  t <- tolower(normalize_text(as.character(df$titulo %||% rep("", n))))
+  t[is.na(t)] <- ""
+  t <- trimws(gsub("\\s+", " ", t))
+  u <- tolower(as.character(if ("link_detalhe" %in% names(df)) df$link_detalhe else rep(NA, n)))
+  if ("link_origem" %in% names(df)) u[is.na(u) | !nzchar(u)] <- tolower(as.character(df$link_origem))[is.na(u) | !nzchar(u)]
+  u[is.na(u)] <- ""
+  grepl(.RE_NAV_TITLE, t, perl = TRUE) |
+    grepl(.RE_DOC_TITLE, t, perl = TRUE) |
+    grepl(.RE_NEWS_TITLE, t, perl = TRUE) |
+    grepl(.RE_NEWS_URL, u, perl = TRUE) |
+    grepl(.RE_BROKEN_URL, u, perl = TRUE)
+}
+
+# Duplicados:
+#  (1) mesma fonte + mesmo título + mesmo prazo (ex.: PDF de retificação com outro link);
+#  (2) mesma fonte + mesmo título sem o prefixo "Opportunity Listing - " (Grants.gov);
+#  (3) mesmo link específico (sem ? nem #) repetido até 3 vezes na mesma fonte
+#      (ex.: EMBRAPII gravou a mesma chamada com 3 títulos diferentes).
+# Fica sempre o registro coletado por último.
 dedup_same_call <- function(df) {
   if (is.null(df) || nrow(df) < 2L || !all(c("entidade", "titulo") %in% names(df))) return(df)
-  tit <- gsub("[^a-z0-9]", "", normalize_text(as.character(df$titulo %||% "")))
-  prazo <- if ("data_limite" %in% names(df)) as.character(df$data_limite) else rep(NA_character_, nrow(df))
-  key <- paste(tolower(trimws(as.character(df$entidade))), tit, ifelse(is.na(prazo), "", prazo), sep = "|")
-  key[!nzchar(tit)] <- paste0("sem_titulo_", which(!nzchar(tit)))
-  ord <- if ("data_hora_coleta" %in% names(df)) order(as.character(df$data_hora_coleta), decreasing = TRUE, na.last = TRUE) else seq_len(nrow(df))
-  first <- !duplicated(key[ord])
-  df[sort(ord[first]), , drop = FALSE]
+  n <- nrow(df)
+  ent <- tolower(trimws(as.character(df$entidade)))
+  tt <- tolower(normalize_text(as.character(df$titulo %||% rep("", n))))
+  tt <- sub("^opportunity listing - ", "", tt)
+  tit <- gsub("[^a-z0-9]", "", tt)
+  ord <- if ("data_hora_coleta" %in% names(df)) order(as.character(df$data_hora_coleta), decreasing = TRUE, na.last = TRUE) else seq_len(n)
+  drop <- rep(FALSE, n)
+  mark <- function(key) {
+    key[is.na(key)] <- paste0("na_", which(is.na(key)))
+    d <- duplicated(key[ord]); drop[ord[d]] <<- TRUE
+  }
+  key_title <- paste(ent, tit, sep = "|"); key_title[!nzchar(tit)] <- paste0("sem_titulo_", which(!nzchar(tit)))
+  mark(key_title)
+  u <- as.character(if ("link_detalhe" %in% names(df)) df$link_detalhe else rep(NA, n))
+  u <- sub("/+$", "", sub("^https?://(www\\.)?", "", tolower(u)))
+  specific <- !is.na(u) & nzchar(u) & !grepl("[?#]", u)
+  cnt <- ave(seq_len(n), paste(ent, u), FUN = length)
+  key_url <- ifelse(specific & cnt <= 3L, paste(ent, u, sep = "|"), paste0("unico_", seq_len(n)))
+  mark(key_url)
+  df[!drop, , drop = FALSE]
 }
 
 # ─── Campus e aderência temática (R05 / T18 / T19) ────────────────────────────

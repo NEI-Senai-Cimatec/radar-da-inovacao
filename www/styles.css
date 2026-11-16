@@ -1183,3 +1183,9 @@ body.authenticated .auth-overlay-backdrop {
     height: 32px;
   }
 }
+/* Tabela principal de resultados: mesma aparência com qualquer filtro */
+table.results-table-fixed { table-layout: fixed; width: 100% !important; }
+table.results-table-fixed td { vertical-align: middle; overflow-wrap: anywhere; }
+table.results-table-fixed td.dt-nowrap, table.results-table-fixed th.dt-nowrap { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+table.results-table-fixed .score-wrap { min-width: 0; }
+table.results-table-fixed td.dt-actions { white-space: nowrap; overflow: visible; }

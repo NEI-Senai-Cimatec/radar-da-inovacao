@@ -657,19 +657,14 @@ make_view_button <- function(id_value, label = "🔍", class = "btn btn-sm btn-o
   )
 }
 
+# Ações da linha: apenas "Visualizar" (o botão "Rastrear" foi removido).
+# O argumento can_track é mantido só por compatibilidade e é ignorado.
 make_actions_html <- function(id_value, can_track = FALSE) {
   btn_view <- sprintf(
     "<button class='btn btn-sm btn-outline-primary action-view-btn' style='padding: 2px 8px; font-size: 0.75rem;' onclick=\"Shiny.setInputValue('row_view', {id: '%s', nonce: Math.random()}, {priority: 'event'})\"><i class='fa fa-eye'></i> Visualizar</button>",
     id_value
   )
-  if (!isTRUE(can_track)) {
-    return(sprintf("<div style='display: flex; gap: 4px; white-space: nowrap;'>%s</div>", btn_view))
-  }
-  btn_track <- sprintf(
-    "<button class='btn btn-sm btn-success action-link-btn' style='padding: 2px 8px; font-size: 0.75rem;' onclick=\"Shiny.setInputValue('row_action', {id: '%s', nonce: Math.random()}, {priority: 'event'})\"><i class='fa fa-map-marker-alt'></i> Rastrear</button>",
-    id_value
-  )
-  sprintf("<div style='display: flex; gap: 4px; white-space: nowrap;'>%s%s</div>", btn_view, btn_track)
+  sprintf("<div style='display: flex; gap: 4px; white-space: nowrap;'>%s</div>", btn_view)
 }
 
 calculate_dynamic_adherence <- function(query, keywords, summary, title = "", subtitle = "", default_score = 0) {
@@ -1373,4 +1368,33 @@ campus_match_mask <- function(df, sel_campi) {
     }
   }
   mask
+}
+
+
+# ─── Região das fontes ────────────────────────────────────────────────────────
+REGION_CHOICES <- c("Todas", "Brasileiras", "Europeias", "Demais regiões")
+EUROPEAN_COUNTRIES <- c(
+  "União Europeia", "Europa", "Alemanha", "França", "Espanha", "Portugal", "Itália",
+  "Reino Unido", "Holanda", "Países Baixos", "Bélgica", "Suíça", "Áustria", "Irlanda",
+  "Noruega", "Suécia", "Finlândia", "Dinamarca", "Islândia", "Polônia", "República Tcheca",
+  "Tchéquia", "Hungria", "Grécia", "Romênia", "Bulgária", "Croácia", "Eslovênia",
+  "Eslováquia", "Estônia", "Letônia", "Lituânia", "Luxemburgo", "Malta", "Chipre"
+)
+
+# TRUE para as linhas cujo país pertence à região escolhida no filtro.
+# Valores antigos ("Ambas", "Internacionais") de buscas salvas continuam funcionando.
+region_matches <- function(pais, region) {
+  region <- as.character(region %||% "Todas")
+  if (!length(region) || is.na(region[[1]])) region <- "Todas"
+  region <- region[[1]]
+  p <- trimws(as.character(pais))
+  is_br <- !is.na(p) & p %in% c("Brasil", "Brazil")
+  is_eu <- !is.na(p) & tolower(p) %in% tolower(c(EUROPEAN_COUNTRIES, "European Union", "Germany", "Europe"))
+  switch(region,
+    "Brasileiras" = is_br,
+    "Europeias" = is_eu,
+    "Demais regiões" = !is_br & !is_eu,
+    "Internacionais" = !is_br,
+    rep(TRUE, length(p))
+  )
 }

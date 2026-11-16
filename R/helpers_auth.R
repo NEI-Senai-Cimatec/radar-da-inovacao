@@ -1,6 +1,6 @@
 # ─── Módulo de Autenticação e Controle de Acesso (Supabase Auth) ───────────────
 # Suporta autenticação via Supabase GoTrue REST API com controle de permissões (RBAC)
-# Desenvolvedores / Diretoria: Acesso total (inclui 'Atualizar base', 'Buscas salvas', 'Editais rastreados', 'Logs')
+# Desenvolvedores / Diretoria: Acesso total (inclui 'Atualizar base', 'Buscas salvas', 'Logs')
 # Usuários normais: Visualização e busca de editais ('Resultados', 'Por financiador')
 
 `%||%` <- function(a, b) if (is.null(a)) b else a

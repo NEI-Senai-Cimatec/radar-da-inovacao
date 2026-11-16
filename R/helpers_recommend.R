@@ -22,15 +22,13 @@ collect_interest_signature <- function(conn, current_query = "") {
   profile <- read_profile(conn)
   profile_lists <- profile_to_lists(profile)
   history <- if (is.null(conn)) data.frame(query_text = character()) else DBI::dbGetQuery(conn, "SELECT query_text FROM historico_buscas ORDER BY executed_at DESC LIMIT 10")
-  tracked <- if (is.null(conn)) data.frame() else DBI::dbGetQuery(conn, "SELECT o.palavras_chave, o.area_tematica, o.entidade FROM editais_rastreados t JOIN oportunidades o ON o.id_registro = t.id_oportunidade")
   history_terms <- unique(unlist(lapply(history$query_text, extract_query_terms)))
-  tracked_terms <- unique(c(safe_split(tracked$palavras_chave), safe_split(tracked$area_tematica), tracked$entidade))
   current_terms <- extract_query_terms(current_query)
   list(
-    keywords = unique(normalize_text(c(profile_lists$keywords, history_terms, tracked_terms, current_terms))),
-    areas = unique(normalize_text(c(profile_lists$areas, safe_split(tracked$area_tematica)))),
+    keywords = unique(normalize_text(c(profile_lists$keywords, history_terms, current_terms))),
+    areas = unique(normalize_text(profile_lists$areas)),
     countries = unique(profile_lists$countries),
-    funders = unique(normalize_text(c(profile_lists$funders, tracked$entidade))),
+    funders = unique(normalize_text(profile_lists$funders)),
     types = unique(profile_lists$types),
     eligibility = unique(profile_lists$eligibility)
   )
@@ -142,11 +140,10 @@ recommend_opportunities <- function(conn, opportunities_df, current_query = "", 
   opportunities_df <- filter_validated(opportunities_df)
   if (nrow(opportunities_df) == 0) return(opportunities_df)
   scored <- compute_adherence_score(opportunities_df, conn, current_query, signature = signature)
-  tracked_ids <- if (is.null(conn)) character() else DBI::dbGetQuery(conn, "SELECT id_oportunidade FROM editais_rastreados")$id_oportunidade
   # BUG-01/11: recomendações usam status DERIVADO (nunca o campo congelado)
   scored$derived_status <- derive_status_df(scored)
   scored |>
-    dplyr::filter(!(id_registro %in% tracked_ids), !(derived_status %in% c("encerrado", "cancelado", "suspenso"))) |>
+    dplyr::filter(!(derived_status %in% c("encerrado", "cancelado", "suspenso"))) |>
     dplyr::select(-derived_status) |>
     dplyr::arrange(dplyr::desc(score_aderencia), parse_date_safe(data_limite)) |>
     dplyr::slice_head(n = top_n)
