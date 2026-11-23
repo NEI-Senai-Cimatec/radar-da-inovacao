@@ -696,6 +696,9 @@ ui <- bslib::page_sidebar(
         tags$i(class = "fa-solid fa-building", style = "color: #004691;"), " Superintendência de Planejamento e Novos Negócios"
       ),
       tags$p(
+        "André Souza Oliveira"
+      ),
+      tags$p(
         tags$i(class = "fa-solid fa-magnifying-glass-chart", style = "color: #004691;"), " NEI - Núcleo de Economia Industrial"
       ),
       tags$p(
